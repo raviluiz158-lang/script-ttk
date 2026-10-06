@@ -1,0 +1,389 @@
+--[[
+    TTK TESTING v5 | AIMBOT ESTÁVEL
+    - Roda o corpo junto com a câmera (arma não buga)
+    - Câmera só muda direção, nunca posição
+    - Silent-only mode se quiser sem mexer na câmera
+--]]
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer      = Players.LocalPlayer
+local Camera           = workspace.CurrentCamera
+
+local HAS_DRAWING = pcall(function() return Drawing.new("Circle") end)
+
+local Config = {
+    AimbotEnabled  = false,
+    SilentAim      = false,
+    SilentOnly     = false,   -- NÃO mexe na câmera
+    RotateBody     = true,    -- gira o corpo junto
+    ESPEnabled     = false,
+    TeamCheck      = true,
+    WallCheck      = false,
+    FOV            = 300,
+    UseFOV         = true,
+    Smoothness     = 1,
+    AimPart        = "Head",
+    ShowName       = true,
+    ShowBox        = true,
+    ShowTracer     = false,
+    Debug          = true,
+    KillPlayerCam  = true,
+}
+
+local currentTarget = nil
+local camBackup     = nil
+
+-- ============================================================
+--  TEAM CHECK MELHORADO
+-- ============================================================
+local function isTeammate(player)
+    if not Config.TeamCheck then return false end
+    if player == LocalPlayer then return true end
+
+    -- Team property
+    if player.Team and LocalPlayer.Team then
+        if player.Team == LocalPlayer.Team then return true end
+    end
+    -- TeamColor (alguns jogos usam só isso)
+    if player.TeamColor and LocalPlayer.TeamColor then
+        if player.TeamColor == LocalPlayer.TeamColor then return true end
+    end
+    return false
+end
+
+-- ============================================================
+--  DESLIGA CÂMERA PADRÃO DO JOGO
+-- ============================================================
+local function disablePlayerCamera()
+    pcall(function()
+        local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+        if not ps then return end
+        local pm = ps:FindFirstChild("PlayerModule")
+        if not pm then return end
+        local mod = require(pm)
+        local cams = mod:GetCameras()
+        for _, c in pairs(cams) do pcall(function() c:Disable() end) end
+    end)
+end
+
+-- ============================================================
+--  INIMIGO MAIS PRÓXIMO
+-- ============================================================
+local function getClosestPlayer()
+    local closest, shortest = nil, math.huge
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if isTeammate(player) then continue end
+
+        local char = player.Character
+        if not char then continue end
+
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
+
+        local part = char:FindFirstChild(Config.AimPart)
+        if not part then part = char:FindFirstChild("Head") end
+        if not part then continue end
+
+        if Config.WallCheck then
+            local params = RaycastParams.new()
+            params.FilterType = Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances = { LocalPlayer.Character }
+            local result = workspace:Raycast(Camera.CFrame.Position, part.Position - Camera.CFrame.Position, params)
+            if result and not result.Instance:IsDescendantOf(char) then continue end
+        end
+
+        local screen, onScreen = Camera:WorldToViewportPoint(part.Position)
+        if not onScreen then continue end
+
+        local dist = (center - Vector2.new(screen.X, screen.Y)).Magnitude
+        if Config.UseFOV and dist > Config.FOV then continue end
+
+        if dist < shortest then
+            shortest = dist
+            closest  = player
+        end
+    end
+
+    return closest
+end
+
+local function getAimPart(player)
+    if not player or not player.Character then return nil end
+    return player.Character:FindFirstChild(Config.AimPart)
+        or player.Character:FindFirstChild("Head")
+end
+
+-- ============================================================
+--  ESP
+-- ============================================================
+local espCache = {}
+
+local function setupESP(player)
+    if player == LocalPlayer or espCache[player] then return end
+    if not HAS_DRAWING then return end
+    local box = Drawing.new("Square")
+    box.Thickness, box.Filled, box.Transparency = 1, false, 1
+    box.Color, box.Visible = Color3.fromRGB(255, 60, 60), false
+    local name = Drawing.new("Text")
+    name.Size, name.Center, name.Outline = 14, true, true
+    name.Color, name.Visible = Color3.fromRGB(255, 255, 255), false
+    local tracer = Drawing.new("Line")
+    tracer.Thickness, tracer.Color, tracer.Visible = 1, Color3.fromRGB(255, 60, 60), false
+    espCache[player] = { box = box, name = name, tracer = tracer }
+end
+
+local function removeESP(player)
+    if espCache[player] then
+        pcall(function() for _, d in pairs(espCache[player]) do d:Remove() end end)
+        espCache[player] = nil
+    end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do setupESP(p) end
+Players.PlayerAdded:Connect(setupESP)
+Players.PlayerRemoving:Connect(removeESP)
+
+RunService.RenderStepped:Connect(function()
+    for player, d in pairs(espCache) do
+        pcall(function()
+            local hide = function()
+                d.box.Visible, d.name.Visible, d.tracer.Visible = false, false, false
+            end
+            if not Config.ESPEnabled then hide() return end
+            local char = player.Character
+            if not char then hide() return end
+            if isTeammate(player) then hide() return end
+            local hum  = char:FindFirstChildOfClass("Humanoid")
+            local hrp  = char:FindFirstChild("HumanoidRootPart")
+            local head = char:FindFirstChild("Head")
+            if not hum or not hrp or not head or hum.Health <= 0 then hide() return end
+
+            local top, topOn    = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+            local bottom, botOn = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3, 0))
+            if topOn and botOn then
+                local height = math.abs(bottom.Y - top.Y)
+                local width  = height / 2
+                d.box.Size     = Vector2.new(width, height)
+                d.box.Position = Vector2.new(bottom.X - width / 2, top.Y)
+                d.box.Visible  = Config.ShowBox
+                d.name.Text     = player.Name
+                d.name.Position = Vector2.new(bottom.X, top.Y - 18)
+                d.name.Visible  = Config.ShowName
+                d.tracer.From    = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+                d.tracer.To      = Vector2.new(bottom.X, bottom.Y)
+                d.tracer.Visible = Config.ShowTracer
+            else
+                hide()
+            end
+        end)
+    end
+end)
+
+-- ============================================================
+--  SILENT AIM
+-- ============================================================
+local function silentTarget()
+    local t = getClosestPlayer()
+    return getAimPart(t)
+end
+
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+    local method = getnamecallmethod()
+    if Config.SilentAim and Config.AimbotEnabled then
+        if method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList"
+           or method == "FindPartOnRayWithWhitelist" then
+            local args = { ... }
+            local ray  = args[1]
+            if typeof(ray) == "Ray" then
+                local p = silentTarget()
+                if p then
+                    args[1] = Ray.new(ray.Origin, (p.Position - ray.Origin).Unit * ray.Direction.Magnitude)
+                end
+            end
+            return oldNamecall(self, unpack(args))
+        end
+    end
+    return oldNamecall(self, ...)
+end)
+
+pcall(function()
+    local oldRaycast = workspace.Raycast
+    oldRaycast = hookfunction(workspace.Raycast, function(self, origin, direction, params)
+        if Config.SilentAim and Config.AimbotEnabled then
+            local p = silentTarget()
+            if p then direction = (p.Position - origin) end
+        end
+        return oldRaycast(self, origin, direction, params)
+    end)
+end)
+
+-- ============================================================
+--  AIMBOT (v5 - arma alinhada)
+-- ============================================================
+local AIM_PRIORITY = Enum.RenderPriority.Character.Value + 1000
+
+RunService:BindToRenderStep("TTK_Aim_v5", AIM_PRIORITY, function()
+    if not Config.AimbotEnabled or Config.SilentOnly then
+        if camBackup and not Config.SilentOnly then
+            pcall(function()
+                Camera.CameraSubject = camBackup.subject
+                Camera.CameraType    = camBackup.type
+            end)
+            camBackup = nil
+        end
+        currentTarget = nil
+        return
+    end
+
+    if not camBackup then
+        camBackup = { subject = Camera.CameraSubject, type = Camera.CameraType }
+        if Config.KillPlayerCam then disablePlayerCamera() end
+    end
+
+    if Camera.CameraSubject ~= nil then Camera.CameraSubject = nil end
+    if Camera.CameraType ~= Enum.CameraType.Scriptable then
+        Camera.CameraType = Enum.CameraType.Scriptable
+    end
+
+    local target = getClosestPlayer()
+    currentTarget = target
+    if not target then return end
+    local part = getAimPart(target)
+    if not part then return end
+
+    -- === CÂMERA: mantém posição, só muda DIREÇÃO ===
+    local camPos = Camera.CFrame.Position
+    local targetPos = part.Position
+    local goalCF = CFrame.lookAt(camPos, targetPos, Vector3.yAxis)
+
+    if Config.Smoothness >= 1 then
+        Camera.CFrame = goalCF
+    else
+        Camera.CFrame = Camera.CFrame:Lerp(goalCF, Config.Smoothness)
+    end
+
+    -- === CORPO: gira o HRP pra ficar de frente (arma aponta certa) ===
+    if Config.RotateBody then
+        local myChar = LocalPlayer.Character
+        local myHrp  = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if myHrp then
+            -- Yaw only (não inclina o corpo, só gira no horizontal)
+            local flat = Vector3.new(targetPos.X, myHrp.Position.Y, targetPos.Z)
+            local bodyCF = CFrame.lookAt(myHrp.Position, flat)
+            -- Preserva a rotação original em X/Z pra não bagunçar animação
+            myHrp.CFrame = myHrp.CFrame:Lerp(bodyCF, Config.Smoothness)
+        end
+    end
+end)
+
+-- ============================================================
+--  FOV + DEBUG
+-- ============================================================
+local fovCircle, debugText
+if HAS_DRAWING then
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Thickness, fovCircle.NumSides, fovCircle.Filled = 1, 64, false
+    fovCircle.Color, fovCircle.Transparency = Color3.fromRGB(255, 255, 255), 0.6
+
+    debugText = Drawing.new("Text")
+    debugText.Size, debugText.Outline = 16, true
+    debugText.Color = Color3.fromRGB(0, 255, 100)
+    debugText.Position = Vector2.new(20, 60)
+    debugText.Visible = false
+
+    RunService.RenderStepped:Connect(function()
+        fovCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        fovCircle.Radius   = Config.FOV
+        fovCircle.Visible  = Config.UseFOV and Config.AimbotEnabled and not Config.SilentOnly
+
+        debugText.Visible = Config.Debug and Config.AimbotEnabled
+        if debugText.Visible then
+            if currentTarget then
+                debugText.Text  = "🎯 " .. currentTarget.Name
+                debugText.Color = Color3.fromRGB(0, 255, 100)
+            else
+                debugText.Text  = "❌ Sem alvo"
+                debugText.Color = Color3.fromRGB(255, 60, 60)
+            end
+        end
+    end)
+end
+
+-- ============================================================
+--  UI
+-- ============================================================
+local Window = Rayfield:CreateWindow({
+    Name = "TTK Testing v5 | ESTÁVEL",
+    LoadingTitle = "Carregando...",
+    LoadingSubtitle = "v5",
+    ConfigurationSaving = { Enabled = true, FolderName = "TTKTesting", FileName = "Config" },
+    KeySystem = false,
+})
+
+local AimTab = Window:CreateTab("Aimbot", 4483362458)
+AimTab:CreateSection("Mira")
+
+AimTab:CreateToggle({ Name = "🎯 AIMBOT", CurrentValue = false, Flag = "AimbotToggle",
+    Callback = function(v) Config.AimbotEnabled = v end })
+
+AimTab:CreateToggle({ Name = "🔇 Silent Only (não mexe na câmera)",
+    CurrentValue = false, Flag = "SilentOnlyToggle",
+    Callback = function(v) Config.SilentOnly = v end })
+
+AimTab:CreateToggle({ Name = "🔄 Girar corpo junto (conserta arma bugada)",
+    CurrentValue = true, Flag = "RotateBodyToggle",
+    Callback = function(v) Config.RotateBody = v end })
+
+AimTab:CreateToggle({ Name = "Silent Aim", CurrentValue = false, Flag = "SilentAimToggle",
+    Callback = function(v) Config.SilentAim = v end })
+
+AimTab:CreateToggle({ Name = "Matar câmera do jogo", CurrentValue = true, Flag = "KillCamToggle",
+    Callback = function(v) Config.KillPlayerCam = v end })
+
+AimTab:CreateSlider({ Name = "FOV", Range = { 50, 1200 }, Increment = 10, Suffix = "px",
+    CurrentValue = 300, Flag = "FOVSlider", Callback = function(v) Config.FOV = v end })
+
+AimTab:CreateSlider({ Name = "Smooth (1 = instantâneo)",
+    Range = { 0.1, 1 }, Increment = 0.05, Suffix = "",
+    CurrentValue = 1, Flag = "SmoothSlider",
+    Callback = function(v) Config.Smoothness = v end })
+
+AimTab:CreateDropdown({ Name = "Parte da mira",
+    Options = { "Head", "HumanoidRootPart", "UpperTorso", "LowerTorso" },
+    CurrentOption = { "Head" }, Flag = "AimPartDrop",
+    Callback = function(opt) Config.AimPart = opt[1] end })
+
+AimTab:CreateToggle({ Name = "🚫 Ignorar time (só inimigo)",
+    CurrentValue = true, Flag = "TeamCheckToggle",
+    Callback = function(v) Config.TeamCheck = v end })
+
+AimTab:CreateToggle({ Name = "Ignorar parede", CurrentValue = false, Flag = "WallCheckToggle",
+    Callback = function(v) Config.WallCheck = v end })
+
+AimTab:CreateToggle({ Name = "🔍 Debug", CurrentValue = true, Flag = "DebugToggle",
+    Callback = function(v) Config.Debug = v end })
+
+local ESPTab = Window:CreateTab("ESP", 4483362458)
+ESPTab:CreateSection("Visual")
+ESPTab:CreateToggle({ Name = "Ativar ESP", CurrentValue = false, Flag = "ESPToggle",
+    Callback = function(v) Config.ESPEnabled = v end })
+ESPTab:CreateToggle({ Name = "Nome", CurrentValue = true, Flag = "ShowNameToggle",
+    Callback = function(v) Config.ShowName = v end })
+ESPTab:CreateToggle({ Name = "Caixa", CurrentValue = true, Flag = "ShowBoxToggle",
+    Callback = function(v) Config.ShowBox = v end })
+ESPTab:CreateToggle({ Name = "Tracer", CurrentValue = false, Flag = "ShowTracerToggle",
+    Callback = function(v) Config.ShowTracer = v end })
+
+Rayfield:Notify({
+    Title = "TTK v5",
+    Content = "Se a arma bugar de lado, ATIVE 'Girar corpo junto' e ajuste o Smooth pra 1.",
+    Duration = 8,
+})
